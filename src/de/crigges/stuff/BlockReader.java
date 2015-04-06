@@ -31,13 +31,14 @@ public class BlockReader{
 		}
 	}
 	
-	public byte read(byte arr) throws CrigpackException{
+	public byte[] read(byte[] arr) throws CrigpackException{
 		if(arr == null){
-			throw new CrigpackException("")
+			throw new CrigpackException("The given array was null");
 		}
-		if(pos + 1 <= length){
+		if(pos + arr.length <= length){
 			pos++;
-			return buffer.get();
+			buffer.get(arr);
+			return arr;
 		}else{
 			throw new CrigpackException("End of block reached");
 		}
