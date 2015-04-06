@@ -11,9 +11,9 @@ public class TerrainCrigFile{
 	
 	public static void main(String[] args) throws CrigpackException{
 		CrigFile c = new CrigFile("C:\\Users\\Crigges-Pc\\Desktop\\wurst.txt");
-		String s = "Käse";
+		String s = "Käsen";
 		c.saveData(s);
-		c.saveData("WURST");
 		c.deleteData(s);
+		c.saveData("WURST");
 	}
 }

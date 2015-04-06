@@ -158,10 +158,15 @@ public class CrigFile{
 	}
 	
 	private long getMatchtingPosition(Block b){
-		Block b = freeBlocks.higher(b);
-		long temp = endOfFile;
-		endOfFile += (length + 20);
-		return temp;
+		Block free = freeBlocks.higher(b);
+		if(free != null){
+			freeBlocks.remove(free);
+			return free.position;
+		}else{
+			long temp = endOfFile;
+			endOfFile += (b.blockSize + 20);
+			return temp;
+		}
 	}
 	
 	private class Block implements Comparable<Block>{
@@ -213,6 +218,12 @@ public class CrigFile{
 			if(next != null){
 				next.setPrevBlock(prev);
 			}
+			if(this == last){
+				last = prev;
+			}
+			if(this == first){
+				first = next;
+			}
 			CrigFile.this.content.remove(this);
 			updateBlockCount();
 		}
@@ -245,7 +256,7 @@ public class CrigFile{
 
 		@Override
 		public int compareTo(Block o) {
-			return this.blockSize - o.blockSize;
+			return o.blockSize - this.blockSize;
 		}	
 	}
 }
