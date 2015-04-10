@@ -11,6 +11,8 @@ import java.util.IdentityHashMap;
 import java.util.TreeSet;
 
 
+
+
 import org.nustaq.serialization.FSTConfiguration;
 
 
@@ -29,6 +31,9 @@ public class CrigFile{
 	private long endOfFile = headerSize;
 	private Block last = null;
 	private Block first = null;
+	private LoadAction onObjectLoad = null;
+	private Thread loadThread = null;
+	private Thread actionThread = null;
 	
 	public CrigFile(String path) throws CrigpackException{
 		try {
@@ -37,12 +42,56 @@ public class CrigFile{
 			headerBuffer = fc.map(MapMode.READ_WRITE, 0, headerSize);
 			if(fc.size() == headerSize){
 				addHeader();
-			};
-			long nextPos = getFirstBlockPos();
-			int index = 0;
-			int blockCount = getBlockCount();
+			}else{
+				readHeader();
+			}
+		} catch (IOException e) {
+			throw new CrigpackException("Could not open or create file for reason:\n", e);
+		}
+	}
+	
+	public void loadData(){
+		loadThread = new Thread(new Runnable() {
+			@Override
+			public void run() {
+				loadDataThreaded();
+			}
+		});
+		loadThread.start();
+	}
+	
+	private void executeLoadActionThreaded(Object o){
+		if(actionThread != null){
+			try {
+				actionThread.join();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
+		actionThread = new Thread(new Runnable() {
+			@Override
+			public void run() {
+				if(onObjectLoad != null){
+					onObjectLoad.onLoad(o);
+				}
+			}
+		});
+		actionThread.start();
+	}
+	
+	
+	/**
+	 * @throws CrigpackException 
+	 * 
+	 */
+	private void loadDataThreaded(){
+		long nextPos = getFirstBlockPos();
+		int index = 0;
+		int blockCount = getBlockCount();
+		try {
 			while(index < blockCount){
-				MappedByteBuffer temp = fc.map(MapMode.READ_WRITE, nextPos, 4);
+				MappedByteBuffer temp;
+				temp = fc.map(MapMode.READ_WRITE, nextPos, 4);
 				int blockLength = temp.getInt();
 				temp = fc.map(MapMode.READ_WRITE, nextPos, blockLength + 20);
 				temp.position(4);
@@ -50,8 +99,6 @@ public class CrigFile{
 				Object con = cur.readExisting(blockLength, nextPos, temp);
 				endOfFile = nextPos + blockLength + 20;
 				nextPos = cur.nextPos;
-				System.out.println(nextPos);
-				System.out.println(con);
 				content.add(cur);
 				blockMap.put(con, cur);
 				cur.setPrevBlock(last);
@@ -60,12 +107,16 @@ public class CrigFile{
 				}
 				last = cur;
 				index++;
+				executeLoadActionThreaded(con);
 			}
 		} catch (IOException e) {
-			throw new CrigpackException("Could not open or create file for reason:\n", e);
+			//ignore exceptions
 		}
 	}
 	
+	public void setLoadAction(LoadAction action){
+		this.onObjectLoad = action;
+	}
 	
 	/**
 	 * Writes the given object to the file
@@ -73,6 +124,13 @@ public class CrigFile{
 	 * @throws CrigpackException 
 	 */
 	public void saveData(Object data) throws CrigpackException{
+		if(loadThread != null){
+			try {
+				loadThread.join();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
 		if(blockMap.containsKey(data)){
 			throw new CrigpackException("The file already contains the given object");
 		}else{
@@ -88,6 +146,13 @@ public class CrigFile{
 	 * @throws CrigpackException 
 	 */
 	public void updateData(Object data) throws CrigpackException{
+		if(loadThread != null){
+			try {
+				loadThread.join();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
 		if(!blockMap.containsKey(data)){
 			throw new CrigpackException("The file does not contain the given object");
 		}else{
@@ -101,6 +166,13 @@ public class CrigFile{
 	 * @throws CrigpackException 
 	 */
 	public void deleteData(Object data) throws CrigpackException{
+		if(loadThread != null){
+			try {
+				loadThread.join();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
 		if(!blockMap.containsKey(data)){
 			throw new CrigpackException("The file does not contain the given object");
 		}else{
@@ -118,7 +190,7 @@ public class CrigFile{
 	
 	private void updateBlockCount(){
 		headerBuffer.putInt(16, content.size());
-		headerBuffer.force();
+//		headerBuffer.force();
 	}
 	
 	private long getFirstBlockPos(){
@@ -127,7 +199,7 @@ public class CrigFile{
 	
 	private void updateFirstBlockPos(){
 		headerBuffer.putLong(20, first.position);
-		headerBuffer.force();
+//		headerBuffer.force();
 	}
 	
 	private void addHeader() throws IOException{
@@ -152,7 +224,7 @@ public class CrigFile{
 		if((flags & FileAttributes.Exists.getBit()) != FileAttributes.Exists.getBit()){
 			throw new CrigpackException("Exist flag was not set, this is an internal Crigpack error");
 		}
-		if((flags & FileAttributes.IsModified.getBit()) != FileAttributes.IsModified.getBit()){
+		if((flags & FileAttributes.IsModified.getBit()) == FileAttributes.IsModified.getBit()){
 			throw new CrigpackException("Crigpack crashed while writing to disc your file is courpted");
 		}
 	}
