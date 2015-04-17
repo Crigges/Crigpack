@@ -7,19 +7,20 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileChannel.MapMode;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.TreeSet;
-
-
-
-
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.nustaq.serialization.FSTConfiguration;
 
 
 public class CrigFile{
 	
 	private static final int versionNumber = 1;
-	private static final int headerSize = 28;
+	private static final int headerSize = 32;
 	private static final int bufferSize = 2048;
 	
 	private FileChannel fc;
@@ -28,12 +29,17 @@ public class CrigFile{
 	private TreeSet<Block> freeBlocks = new TreeSet<>();
 	private ArrayList<Block> content = new ArrayList<>();
 	private IdentityHashMap<Object, Block> blockMap = new IdentityHashMap<>();
+	private HashMap<Integer, Long> idToPosMap = new HashMap<>();
+	private HashMap<Integer, Object> idToObjMap = new HashMap<>();
+	private IdentityHashMap<Object, Future<?>> taskMap = new IdentityHashMap<>();
+	private ExecutorService taskExecuter = Executors.newSingleThreadExecutor();
 	private long endOfFile = headerSize;
 	private Block last = null;
 	private Block first = null;
 	private LoadAction onObjectLoad = null;
 	private Thread loadThread = null;
 	private Thread actionThread = null;
+	private int curId;
 	
 	public CrigFile(String path) throws CrigpackException{
 		try {
@@ -58,6 +64,10 @@ public class CrigFile{
 			}
 		});
 		loadThread.start();
+	}
+	
+	public void loadById(int id){
+		
 	}
 	
 	private void executeLoadActionThreaded(Object o){
@@ -90,20 +100,15 @@ public class CrigFile{
 		int blockCount = getBlockCount();
 		try {
 			while(index < blockCount){
-				MappedByteBuffer temp;
-				temp = fc.map(MapMode.READ_WRITE, nextPos, 4);
-				int blockLength = temp.getInt();
-				temp = fc.map(MapMode.READ_WRITE, nextPos, blockLength + 20);
-				temp.position(4);
-				Block cur = new Block();
-				Object con = cur.readExisting(blockLength, nextPos, temp);
-				endOfFile = nextPos + blockLength + 20;
+				Block cur = createBlockAtPos(nextPos)
+				Object con = cur.content;
+				endOfFile = nextPos + blockLength + 24;
 				nextPos = cur.nextPos;
 				content.add(cur);
 				blockMap.put(con, cur);
-				cur.setPrevBlock(last);
+				cur.prev = last;
 				if(last != null){
-					last.setNextBlock(cur);
+					last.next = cur;
 				}
 				last = cur;
 				index++;
@@ -123,7 +128,7 @@ public class CrigFile{
 	 * @param data		Object to save 
 	 * @throws CrigpackException 
 	 */
-	public void saveData(Object data) throws CrigpackException{
+	public int saveData(Object data) throws CrigpackException{
 		if(loadThread != null){
 			try {
 				loadThread.join();
@@ -131,13 +136,74 @@ public class CrigFile{
 				e.printStackTrace();
 			}
 		}
-		if(blockMap.containsKey(data)){
-			throw new CrigpackException("The file already contains the given object");
-		}else{
-			Block b = new Block();
-			b.initNew(data);
-			blockMap.put(data, b);
+		//check for existing save action of this object
+		Future<?> saveTask = taskMap.get(data);
+		int id = curId++;
+		idToObjMap.put(id, data);
+		if(saveTask == null || saveTask.isDone()){
+			taskMap.put(data, taskExecuter.submit(new SaveTask(data, id)));
 		}
+		return id;
+	}
+	
+	/**
+	 * Deletes the given object in the file
+	 * @param data		Object to save 
+	 * @throws CrigpackException 
+	 */
+	public void deleteDataById(int id) throws CrigpackException{
+		if(loadThread != null){
+			try {
+				loadThread.join();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
+		Object o = idToObjMap.get(id);
+		if(o == null){
+			Long pos = idToPosMap.get(id);
+			if(pos == null){
+				throw new CrigpackException("Du hast was kaputt gemacht herr präsident");
+			}
+			Block b = createBlockAtPos(pos);
+			o = b.content;
+			idToPosMap.remove(id);
+		}
+		Future<?> saveTask = taskMap.get(id);
+		if(saveTask != null){
+			saveTask.cancel(false);
+		}
+		taskMap.put(o, taskExecuter.submit(new DeleteTask(o)));
+	}
+	
+	private Block createBlockAtPos(long pos) throws IOException{
+		MappedByteBuffer temp;
+		temp = fc.map(MapMode.READ_WRITE, pos, 4);
+		int blockLength = temp.getInt();
+		temp = fc.map(MapMode.READ_WRITE, pos, blockLength + 20);
+		Block cur = new Block();
+		cur.readExisting(pos, temp);
+		return cur;
+	}
+	
+	/**
+	 * Deletes the given object in the file
+	 * @param data		Object to save 
+	 * @throws CrigpackException 
+	 */
+	public void deleteData(Object data) throws CrigpackException{
+		if(loadThread != null){
+			try {
+				loadThread.join();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
+		Future<?> saveTask = taskMap.get(data);
+		if(saveTask != null){
+			saveTask.cancel(false);
+		}
+		taskMap.put(data, taskExecuter.submit(new DeleteTask(data)));
 	}
 	
 	/**
@@ -153,35 +219,7 @@ public class CrigFile{
 				e.printStackTrace();
 			}
 		}
-		if(!blockMap.containsKey(data)){
-			throw new CrigpackException("The file does not contain the given object");
-		}else{
-			
-		}
-	}
-	
-	/**
-	 * Updates the given object in the file
-	 * @param data		Object to save 
-	 * @throws CrigpackException 
-	 */
-	public void deleteData(Object data) throws CrigpackException{
-		if(loadThread != null){
-			try {
-				loadThread.join();
-			} catch (InterruptedException e) {
-				e.printStackTrace();
-			}
-		}
-		if(!blockMap.containsKey(data)){
-			throw new CrigpackException("The file does not contain the given object");
-		}else{
-			Block b = blockMap.get(data);
-			b.delete();
-			b.blockSize--;
-			freeBlocks.add(b);
-			blockMap.remove(data);
-		}
+		//TODO
 	}
 	
 	private int getBlockCount(){
@@ -190,7 +228,7 @@ public class CrigFile{
 	
 	private void updateBlockCount(){
 		headerBuffer.putInt(16, content.size());
-//		headerBuffer.force();
+		headerBuffer.force();
 	}
 	
 	private long getFirstBlockPos(){
@@ -199,7 +237,11 @@ public class CrigFile{
 	
 	private void updateFirstBlockPos(){
 		headerBuffer.putLong(20, first.position);
-//		headerBuffer.force();
+		headerBuffer.force();
+	}
+	
+	private void setLastUniqueId(int i){
+		headerBuffer.putInt(28, i);
 	}
 	
 	private void addHeader() throws IOException{
@@ -208,6 +250,7 @@ public class CrigFile{
 		headerBuffer.putInt(FileAttributes.Exists.getBit());
 		headerBuffer.putInt(content.size());
 		headerBuffer.putLong(headerSize);
+		headerBuffer.putInt(Integer.MIN_VALUE);
 	}
 	
 	private void readHeader() throws CrigpackException{
@@ -227,6 +270,8 @@ public class CrigFile{
 		if((flags & FileAttributes.IsModified.getBit()) == FileAttributes.IsModified.getBit()){
 			throw new CrigpackException("Crigpack crashed while writing to disc your file is courpted");
 		}
+		headerBuffer.getLong(); //skip first block pos
+		curId = headerBuffer.getInt();
 	}
 	
 	private long getMatchtingPosition(Block b){
@@ -236,7 +281,7 @@ public class CrigFile{
 			return free.position;
 		}else{
 			long temp = endOfFile;
-			endOfFile += (b.blockSize + 20);
+			endOfFile += (b.blockSize + 24);
 			return temp;
 		}
 	}
@@ -248,19 +293,23 @@ public class CrigFile{
 		private Block prev, next = null;
 		private long nextPos = 0;
 		private int blockSize;
+		private int id;
 		
 		private Block(){}
 		
-		private void initNew(Object o) throws CrigpackException{
+		private void initNew(Object o, int id){
+			this.content = o;
 			byte[] temp = serializer.asByteArray(o);
 			blockSize = temp.length;
 			this.position = getMatchtingPosition(this);
 			try {
-				buffer = fc.map(MapMode.READ_WRITE, position, blockSize + 20);
+				buffer = fc.map(MapMode.READ_WRITE, position, blockSize + 24);
 			} catch (IOException e) {
-				throw new CrigpackException("Could not access file for reason:\n", e);
+				System.out.println(e);
 			}
 			buffer.putInt(blockSize);
+			setLastUniqueId(id);
+			buffer.putInt(id);
 			buffer.put(temp);
 			setPrevBlock(last);
 			if(last != null){
@@ -269,20 +318,23 @@ public class CrigFile{
 			last = this;
 			CrigFile.this.content.add(this);
 			updateBlockCount();
+			idToPosMap.put(id, this.position);
 		}
 		
-		private Object readExisting(int size, long pos, MappedByteBuffer buffer){
-			this.blockSize = size;
+		private Object readExisting(long pos, MappedByteBuffer buffer){
+			this.blockSize = buffer.getInt();
 			this.position = pos;
 			this.buffer = buffer;
-			byte[] temp = new byte[size];
+			this.id = buffer.getInt();
+			byte[] temp = new byte[blockSize];
 			buffer.get(temp);
 			content = serializer.asObject(temp);
 			nextPos = buffer.getLong(buffer.position() + 8);
+			idToPosMap.put(id, this.position);
 			return content;	
 		}
 		
-		public final void delete() throws CrigpackException{
+		public final void delete(){
 			buffer.clear();
 			if(prev != null){
 				prev.setNextBlock(next);
@@ -303,11 +355,11 @@ public class CrigFile{
 		private void setNextBlock(Block next){
 			if(next != null){
 				this.next = next;
-				buffer.putLong(blockSize + 12, next.position);
+				buffer.putLong(blockSize + 16, next.position);
 				buffer.force();
 			}else{
 				this.next = null;
-				buffer.putLong(blockSize + 12, 0);
+				buffer.putLong(blockSize + 16, 0);
 				buffer.force();
 			}
 		}
@@ -315,20 +367,77 @@ public class CrigFile{
 		private void setPrevBlock(Block prev){
 			if(prev != null){
 				this.prev = prev;
-				buffer.putLong(blockSize + 4, prev.position);
+				buffer.putLong(blockSize + 8, prev.position);
 				buffer.force();
 			}else{
 				first = this;
 				updateFirstBlockPos();
 				this.prev = null;
-				buffer.putLong(blockSize + 4, 0);
+				buffer.putLong(blockSize + 8, 0);
 				buffer.force();
 			}
 		}
 
 		@Override
 		public int compareTo(Block o) {
-			return o.blockSize - this.blockSize;
+			return this.blockSize - o.blockSize;
 		}	
+	}
+	
+	class SaveTask implements Callable<Void>{
+		private Object toSave;
+		private int id;
+		
+		public SaveTask(Object toSave, int id){
+			this.toSave = toSave;
+			this.id = id;
+		}
+
+		@Override
+		public Void call() throws Exception {
+			if(!blockMap.containsKey(toSave)){
+				Block b = new Block();
+				b.initNew(toSave, id);
+				blockMap.put(toSave, b);
+			}
+			return null;
+		}
+	}
+	
+	class DeleteTask implements Callable<Void>{
+		private Object toDelete;
+		
+		public DeleteTask(Object toDelete){
+			this.toDelete = toDelete;
+		}
+
+		@Override
+		public Void call() throws Exception {
+			Block b = blockMap.get(toDelete);
+			if(b != null){
+				b.delete();
+				b.blockSize--;
+				freeBlocks.add(b);
+				blockMap.remove(toDelete);
+			}
+			return null;
+		}
+	}
+	
+	class DeleteAtPosTask implements Callable<Void>{
+		private long pos;
+		
+		public DeleteAtPosTask(long pos){
+			this.pos = pos;
+		}
+
+		@Override
+		public Void call() throws Exception {
+			Block b = createBlockAtPos(pos);
+			b.delete();
+			b.blockSize--;
+			freeBlocks.add(b);
+			return null;
+		}
 	}
 }
