@@ -52,6 +52,7 @@ public class CrigFile{
 			}else{
 				readHeader();
 			}
+			buildIdOffsetTable();
 		} catch (IOException e) {
 			throw new CrigpackException("Could not open or create file for reason:\n", e);
 		}
@@ -59,6 +60,19 @@ public class CrigFile{
 	
 	public void close(){
 		taskExecuter.shutdown();
+	}
+	
+	private void buildIdOffsetTable() throws IOException{
+		long nextPos = getFirstBlockPos();
+		int blockCount = getBlockCount();
+		int i = 0;
+		while(i < blockCount){
+			MappedByteBuffer blockHeader = fc.map(MapMode.READ_WRITE, nextPos, 8);
+			idToPosMap.put(blockHeader.getInt(4), nextPos);
+			blockHeader = fc.map(MapMode.READ_WRITE, nextPos + blockHeader.getInt(0) + 16, 8);
+			nextPos = blockHeader.getLong();
+			i++;
+		}
 	}
 	
 	public void loadData(){
@@ -328,7 +342,7 @@ public class CrigFile{
 		private long position;
 		private MappedByteBuffer buffer;
 		private Block prev, next = null;
-		private long nextPos = 0;
+		private long nextPos, prevPos = 0;
 		private int blockSize;
 		private int id;
 		
@@ -364,7 +378,9 @@ public class CrigFile{
 			this.id = buffer.getInt();
 			byte[] temp = new byte[blockSize];
 			buffer.get(temp);
-			nextPos = buffer.getLong(buffer.position() + 8);
+			content = serializer.asObject(temp);
+			prevPos = buffer.getLong();
+			nextPos = buffer.getLong();		
 			return content;	
 		}
 		
@@ -466,10 +482,28 @@ public class CrigFile{
 
 		@Override
 		public Void call() throws Exception {
-			Block b = createBlockAtPos(pos);
-			b.delete();
-			b.blockSize--;
-			freeBlocks.add(b);
+			Block b;
+			Block prev = null, next = null;
+			try {
+				b = createBlockAtPos(pos);
+				if(b.prevPos != 0){
+					prev = createBlockAtPos(b.prevPos);
+				}
+				if(b.nextPos != 0){	
+					next = createBlockAtPos(b.nextPos);
+				}
+				if(prev != null){
+					prev.setNextBlock(next);
+				}
+				if(next != null){
+					next.setPrevBlock(prev);
+				}
+				b.delete();
+				b.blockSize--;
+				freeBlocks.add(b);
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
 			return null;
 		}
 	}
