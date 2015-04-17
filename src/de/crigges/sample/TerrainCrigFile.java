@@ -11,11 +11,13 @@ public class TerrainCrigFile{
 	
 	public static void main(String[] args) throws CrigpackException, InterruptedException{
 		CrigFile c = new CrigFile("C:\\Users\\Crigges-Pc\\Desktop\\wurst.txt");
+		c.loadData();
 		c.saveData("käse");
 		c.saveData("kädsfde");
 		c.saveData("kädfsse");
 		int id = c.saveData("wurst");
-		c.deleteDataById(id);
-		
+		//c.deleteDataById(id);
+		System.out.println(c.loadById(id));
+		c.close();
 	}
 }

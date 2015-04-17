@@ -14,6 +14,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
 import org.nustaq.serialization.FSTConfiguration;
 
 
@@ -27,7 +29,6 @@ public class CrigFile{
 	private FSTConfiguration serializer = FSTConfiguration.createDefaultConfiguration();
 	private MappedByteBuffer headerBuffer;
 	private TreeSet<Block> freeBlocks = new TreeSet<>();
-	private ArrayList<Block> content = new ArrayList<>();
 	private IdentityHashMap<Object, Block> blockMap = new IdentityHashMap<>();
 	private HashMap<Integer, Long> idToPosMap = new HashMap<>();
 	private HashMap<Integer, Object> idToObjMap = new HashMap<>();
@@ -56,6 +57,10 @@ public class CrigFile{
 		}
 	}
 	
+	public void close(){
+		taskExecuter.shutdown();
+	}
+	
 	public void loadData(){
 		loadThread = new Thread(new Runnable() {
 			@Override
@@ -66,8 +71,39 @@ public class CrigFile{
 		loadThread.start();
 	}
 	
-	public void loadById(int id){
-		
+	public Object loadById(int id) throws CrigpackException{
+		boolean b = false;
+		try {
+			taskExecuter.shutdown();
+			b = taskExecuter.awaitTermination(1000, TimeUnit.SECONDS);
+		} catch (InterruptedException e) {
+			throw new CrigpackException("Could no terminate task executor for reason:", e);
+		}
+		taskExecuter = Executors.newSingleThreadExecutor();
+		taskExecuter.submit(new Runnable() {	
+			@Override
+			public void run() {			}
+		});
+		if(b){
+			Object o = idToObjMap.get(id);
+			if(o == null){
+				Long pos = idToPosMap.get(id);
+				idToPosMap.remove(id);
+				Block cur = null;
+				try {
+					cur = createBlockAtPos(pos);
+				} catch (IOException e) {
+					throw new CrigpackException("Could not create block for reason:", e);
+				}
+				idToObjMap.put(id, cur.content);
+				blockMap.put(cur.content, cur);
+				return cur.content;
+			}else{
+				return o;
+			}
+		}else{
+			return null;
+		}
 	}
 	
 	private void executeLoadActionThreaded(Object o){
@@ -104,7 +140,6 @@ public class CrigFile{
 				Object con = cur.content;
 				endOfFile = nextPos + cur.blockSize + 24;
 				nextPos = cur.nextPos;
-				content.add(cur);
 				blockMap.put(con, cur);
 				cur.prev = last;
 				if(last != null){
@@ -176,7 +211,7 @@ public class CrigFile{
 		MappedByteBuffer temp;
 		temp = fc.map(MapMode.READ_WRITE, pos, 4);
 		int blockLength = temp.getInt();
-		temp = fc.map(MapMode.READ_WRITE, pos, blockLength + 20);
+		temp = fc.map(MapMode.READ_WRITE, pos, blockLength + 24);
 		Block cur = new Block();
 		cur.readExisting(pos, temp);
 		return cur;
@@ -223,8 +258,13 @@ public class CrigFile{
 		return headerBuffer.getInt(16);
 	}
 	
-	private void updateBlockCount(){
-		headerBuffer.putInt(16, content.size());
+	private void incBlockCount(){
+		headerBuffer.putInt(16, headerBuffer.getInt(16) + 1);
+		headerBuffer.force();
+	}
+	
+	private void decBlockCount(){
+		headerBuffer.putInt(16, headerBuffer.getInt(16) - 1);
 		headerBuffer.force();
 	}
 	
@@ -245,7 +285,7 @@ public class CrigFile{
 		headerBuffer.put("Crigfile".getBytes());
 		headerBuffer.putInt(versionNumber);
 		headerBuffer.putInt(FileAttributes.Exists.getBit());
-		headerBuffer.putInt(content.size());
+		headerBuffer.putInt(0);
 		headerBuffer.putLong(headerSize);
 		headerBuffer.putInt(Integer.MIN_VALUE);
 		curId = Integer.MIN_VALUE;
@@ -313,8 +353,7 @@ public class CrigFile{
 				last.setNextBlock(this);
 			}
 			last = this;
-			CrigFile.this.content.add(this);
-			updateBlockCount();
+			incBlockCount();
 			idToPosMap.put(id, this.position);
 		}
 		
@@ -325,9 +364,7 @@ public class CrigFile{
 			this.id = buffer.getInt();
 			byte[] temp = new byte[blockSize];
 			buffer.get(temp);
-			content = serializer.asObject(temp);
 			nextPos = buffer.getLong(buffer.position() + 8);
-			idToPosMap.put(id, this.position);
 			return content;	
 		}
 		
@@ -345,8 +382,7 @@ public class CrigFile{
 			if(this == first){
 				first = next;
 			}
-			CrigFile.this.content.remove(this);
-			updateBlockCount();
+			decBlockCount();
 		}
 		
 		private void setNextBlock(Block next){
