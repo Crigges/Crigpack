@@ -100,9 +100,9 @@ public class CrigFile{
 		int blockCount = getBlockCount();
 		try {
 			while(index < blockCount){
-				Block cur = createBlockAtPos(nextPos)
+				Block cur = createBlockAtPos(nextPos);
 				Object con = cur.content;
-				endOfFile = nextPos + blockLength + 24;
+				endOfFile = nextPos + cur.blockSize + 24;
 				nextPos = cur.nextPos;
 				content.add(cur);
 				blockMap.put(con, cur);
@@ -162,18 +162,14 @@ public class CrigFile{
 		Object o = idToObjMap.get(id);
 		if(o == null){
 			Long pos = idToPosMap.get(id);
+			idToPosMap.remove(id);
 			if(pos == null){
 				throw new CrigpackException("Du hast was kaputt gemacht herr präsident");
 			}
-			Block b = createBlockAtPos(pos);
-			o = b.content;
-			idToPosMap.remove(id);
+			taskExecuter.submit(new DeleteAtPosTask(pos));
+		}else{
+			deleteData(o);
 		}
-		Future<?> saveTask = taskMap.get(id);
-		if(saveTask != null){
-			saveTask.cancel(false);
-		}
-		taskMap.put(o, taskExecuter.submit(new DeleteTask(o)));
 	}
 	
 	private Block createBlockAtPos(long pos) throws IOException{
@@ -203,7 +199,8 @@ public class CrigFile{
 		if(saveTask != null){
 			saveTask.cancel(false);
 		}
-		taskMap.put(data, taskExecuter.submit(new DeleteTask(data)));
+		idToObjMap.remove(data);
+		taskExecuter.submit(new DeleteTask(data));
 	}
 	
 	/**
@@ -241,7 +238,7 @@ public class CrigFile{
 	}
 	
 	private void setLastUniqueId(int i){
-		headerBuffer.putInt(28, i);
+		headerBuffer.putInt(28, i+1);
 	}
 	
 	private void addHeader() throws IOException{
@@ -251,6 +248,7 @@ public class CrigFile{
 		headerBuffer.putInt(content.size());
 		headerBuffer.putLong(headerSize);
 		headerBuffer.putInt(Integer.MIN_VALUE);
+		curId = Integer.MIN_VALUE;
 	}
 	
 	private void readHeader() throws CrigpackException{
@@ -270,8 +268,7 @@ public class CrigFile{
 		if((flags & FileAttributes.IsModified.getBit()) == FileAttributes.IsModified.getBit()){
 			throw new CrigpackException("Crigpack crashed while writing to disc your file is courpted");
 		}
-		headerBuffer.getLong(); //skip first block pos
-		curId = headerBuffer.getInt();
+		curId = headerBuffer.getInt(28);
 	}
 	
 	private long getMatchtingPosition(Block b){
