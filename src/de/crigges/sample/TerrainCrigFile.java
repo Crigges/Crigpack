@@ -16,7 +16,7 @@ public class TerrainCrigFile{
 		c.saveData("kädsfde");
 		c.saveData("kädfsse");
 		int id = c.saveData("wurst");
-		//c.deleteDataById(id);
+		c.deleteDataById(id);
 		System.out.println(c.loadById(id));
 		c.close();
 	}
